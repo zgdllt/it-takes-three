@@ -10,8 +10,9 @@ async def selectBuff(agent: Agent):
     # Here is an example of how to select a buff.
     # Always select the first buff in the available buff list.
     available_buffs = agent.availiable_buffs
-    assert available_buffs is not None
-
+    if available_buffs is None:
+        logging.warning("No available buffs.")
+        return
     await agent.select_buff(available_buffs.buffs[0].name)
 
 def judge_bullet(bullet, player, walls):
@@ -126,6 +127,8 @@ def target_rival(walls,self_info, opponent_info):
 async def loop(agent: Agent):
     # Your code here.
     # Here is an example of how to use the agent.
+    # Select a buff if available
+    await selectBuff(agent)
     player_info_list = agent.all_player_info
     assert player_info_list is not None
 
