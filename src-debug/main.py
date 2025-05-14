@@ -333,6 +333,8 @@ async def loop(agent: Agent):
         if new_pos == (px, py):
             await agent.move_backward()
             await agent.turn_clockwise()
+            await agent.move_forward()s
+            await agent.turn_clockwise(0)
         for wall in walls:
             wall_pos = wall.position
             wx = wall_pos.x * 10
@@ -362,7 +364,7 @@ async def loop(agent: Agent):
         if target != 360: 
             await agent.move_forward(0)
             diff = (target - int(player_angle*180/math.pi)) % 360
-            while abs(diff) > 10:
+            while abs(diff) > 5:
                 if diff < 0:
                     if diff < -45:
                         await agent.turn_clockwise()
