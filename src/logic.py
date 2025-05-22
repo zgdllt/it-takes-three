@@ -2,7 +2,70 @@ import logging
 import math
 import pygame
 from agent.agent import Agent
+class Strategy:
+    async def update(self, agent: Agent):
+        raise NotImplementedError
+    
+class DodgeStrategy(Strategy):
+    def __init__(self, angle):
+        self.angle = angle
+        self.done = False
 
+    async def update(self, agent: Agent):
+        if self.done:
+            return False
+        # rotate towards safe direction
+        await agent.turn_clockwise(self.angle)
+        # move forward to dodge
+        await agent.move_forward()
+        self.done = True
+        return False
+
+class ContactStrategy(Strategy):
+    def __init__(self, path):
+        self.path = path or []
+        self.index = 0
+
+    async def update(self, agent: Agent):
+        if self.index >= len(self.path):
+            return False
+        x, y = self.path[self.index]
+        info = agent.all_player_info
+        self_info = next(p for p in info if p.token == agent.token)
+        px, py = self_info.position.x, self_info.position.y
+        # simple move logic
+        if abs(x - px) > abs(y - py):
+            if x > px:
+                await agent.move_forward()
+            else:
+                await agent.move_backward()
+        else:
+            if y > py:
+                await agent.turn_clockwise()
+            else:
+                await agent.turn_counter_clockwise()
+        self.index += 1
+        return True
+
+class AttackStrategy(Strategy):
+    def __init__(self):
+        self.done = False
+
+    async def update(self, agent: Agent):
+        if self.done:
+            return False
+        info = agent.all_player_info
+        self_info = next(p for p in info if p.token == agent.token)
+        op = next(p for p in info if p.token != agent.token)
+        # aim
+        angle = target_rival(agent.environment_info.walls, self_info, op)
+        await agent.turn_clockwise(angle)
+        await agent.attack()
+        self.done = True
+        return False
+
+# current strategy instance
+current_strategy = None
 
 async def selectBuff(agent: Agent):
     # Your code here.
@@ -12,6 +75,7 @@ async def selectBuff(agent: Agent):
     assert available_buffs is not None
 
     await agent.select_buff(available_buffs.buffs[0].name)
+
 async def get_player_info(agent: Agent):
     player_info_list = agent.all_player_info
     assert player_info_list is not None
@@ -26,6 +90,7 @@ async def get_player_info(agent: Agent):
             opponent_info = player
     logging.debug(f"Self: {self_info.position}, Opponent: {opponent_info.position}")
     return self_info, opponent_info
+
 def judge_bullet(bullet_pos, bullet_speed, player, walls):
     bullet_angle = bullet_pos.angle
     player_pos = player.position
@@ -56,6 +121,11 @@ def judge_bullet(bullet_pos, bullet_speed, player, walls):
             is_safe = False
             break
     return is_safe, bullet_angle, distance
+
+def find_rival(walls, self_info, opponent_info):
+    # Your code here.
+    pass
+
 def target_rival(walls,self_info, opponent_info):
     for i in range(0, 359):
         bullet_pos = self_info.position
@@ -66,113 +136,41 @@ def target_rival(walls,self_info, opponent_info):
         if not is_safe:
             return i
     return 360
+
 async def loop(agent: Agent):
-    # Your code here.
-    # Here is an example of how to use the agent.
-    # Select a buff if available
-    global state
-    global bulletspeed
-    bulletspeed=2
-    await selectBuff(agent)
-    assert agent.all_player_info is not None
+    global current_strategy
+    # fetch player info and environment
     self_info, opponent_info = await get_player_info(agent)
-    logging.debug(f"Self: {self_info.position}, Opponent: {opponent_info.position}")
+    env = agent.environment_info
+    if env is None:
+        return
+    walls = env.walls
+    bullets = env.bullets
 
-    environment_info = agent.environment_info
-    assert environment_info is not None
-    walls = environment_info.walls
-    bullets = environment_info.bullets
+    # continue current strategy if active
+    if current_strategy:
+        active = await current_strategy.update(agent)
+        if active:
+            return
+        current_strategy = None
 
-    px = self_info.position.x
-    py = self_info.position.y
-    player_angle = self_info.position.angle
-    is_safe = True
-    # anti-rotation
-    agent.turn_clockwise(0)
-    bullet_danger_distance = 5.0
+    # check bullet threats
     for bullet in bullets:
-        state="avoiding"
-        is_safe, direction, distace = judge_bullet(bullet.position,bullet.speed, self_info, walls)
-        bulletspeed = bullet.speed
+        is_safe, direction, _ = judge_bullet(bullet.position, bullet.speed, self_info, walls)
         if not is_safe:
-            perp_direction = (direction + 90) % 360
-            diff = (perp_direction - int(player_angle*180/math.pi)) % 360
-            if diff <= 180:
-                if diff > 45:
-                    await agent.turn_counter_clockwise(45)
-                else:
-                    await agent.turn_counter_clockwise(diff)
-            else:
-                diff = (360 - diff) % 360
-                if diff > 45:
-                    await agent.turn_clockwise(45)
-                else:
-                    await agent.turn_clockwise(diff)
-            await agent.turn_clockwise(0)
-            await agent.move_forward()
-            break
+            current_strategy = DodgeStrategy(direction)
+            return
 
-    wall_safe_distance = 5.0
-    if is_safe and self_info.weapon.current_bullets > 0:
-        distance = math.hypot(opponent_info.position.x - px, opponent_info.position.y - py)
-        state="moving"
-        await agent.move_forward()
-        next_pos = (px + wall_safe_distance * math.cos(player_angle), py + wall_safe_distance * math.sin(player_angle))
-        new_info,_= await get_player_info(agent)
-        new_pos = (new_info.position.x, new_info.position.y)
-        if new_pos == (px, py):
-            await agent.move_backward()
-            await agent.turn_clockwise()
-            await agent.move_forward()
-            await agent.turn_clockwise(0)
-        for wall in walls:
-            wall_pos = wall.position
-            wx = wall_pos.x * 10
-            wy = wall_pos.y * 10
-            nx = next_pos[0]
-            ny = next_pos[1]
-            wall_angle = wall_pos.angle
-            if wall_angle == 0:
-                intersection_x=(wy-py)/math.tan(player_angle)+px
-                if (py < wy and ny > wy) or (py > wy and ny < wy) and 0 < intersection_x - nx < 10:
-                    await agent.move_backward()
-                    if math.tan(player_angle) > 0:
-                        await agent.turn_clockwise()
-                    else:
-                        await agent.turn_counter_clockwise()
-                break
-            elif wall_angle == 90:
-                intersection_y=(wx-px)*math.tan(player_angle)+py
-                if (px < wx and nx > wx) or (px > wx and nx < wx) and 0 < intersection_y - ny < 10:
-                    await agent.move_backward()
-                    if math.tan(player_angle) > 0:
-                        await agent.turn_counter_clockwise()
-                    else:
-                        await agent.turn_clockwise()
-                break
-        target = target_rival(walls, self_info, opponent_info)
-        if target != 360: 
-            await agent.move_forward(0)
-            diff = (target - int(player_angle*180/math.pi)) % 360
-            while abs(diff) > 5:
-                if diff < 0:
-                    if diff < -45:
-                        await agent.turn_clockwise()
-                    else:
-                        await agent.turn_clockwise(-diff)
-                else:
-                    if diff > 45:
-                        await agent.turn_counter_clockwise()
-                    else:
-                        await agent.turn_counter_clockwise(diff)
-                self_info, opponent_info = await get_player_info(agent)
-                player_angle = self_info.position.angle
-                diff = target - int(player_angle * 180 / math.pi)
-                diff = diff % 360
-            await agent.turn_clockwise(0)
-            for _ in range(0, 10):
-                await agent.attack()
-    for skill in self_info.skills:
-        if skill.current_cooldown == 0:
-            await agent.use_skill(skill.name)
-            break
+    # compute distance to opponent
+    dx = opponent_info.position.x - self_info.position.x
+    dy = opponent_info.position.y - self_info.position.y
+    distance = math.hypot(dx, dy)
+    ATTACK_THRESHOLD = 20
+    if distance > ATTACK_THRESHOLD:
+        path = find_rival(walls, self_info, opponent_info)
+        current_strategy = ContactStrategy(path)
+        return
+
+    # default attack strategy
+    current_strategy = AttackStrategy()
+    await current_strategy.update(agent)

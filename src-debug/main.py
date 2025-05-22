@@ -9,6 +9,7 @@ import heapq
 import pygame
 import threading
 import time
+from os import system
 
 
 async def selectBuff(agent: Agent):
@@ -20,37 +21,129 @@ async def selectBuff(agent: Agent):
         logging.warning("No available buffs.")
         return
     await agent.select_buff(available_buffs.buffs[0].name)
+class line:
+    def __init__(self, start, end):
+        self.start = start
+        self.end = end
+        self.angle = math.atan2(end[1] - start[1], end[0] - start[0])
+        self.length = math.hypot(end[0] - start[0], end[1] - start[1])
+    def __init__(self, start, angle, length):
+        self.start = start
+        self.angle = angle
+        self.length = length
+        self.end = (start[0] + length * math.cos(angle), start[1] + length * math.sin(angle))
+    def find_intersection(line1, line2):
+        # Check if two lines intersect
+        x1, y1 = line1.start
+        x2, y2 = line1.end
+        x3, y3 = line2.start
+        x4, y4 = line2.end
+        denom = (x1 - x2) * (y3 - y4) - (y1 - y2) * (x3 - x4)
+        if denom == 0:
+            return None
+        ua = ((x1 - x3) * (y3 - y4) - (y1 - y3) * (x3 - x4)) / denom
+        ub = ((x1 - x2) * (y1 - y3) - (y1 - y2) * (x1 - x3)) / denom
+        if 0 <= ua <= 1 and 0 <= ub <= 1:
+            intersection_x = x1 + ua * (x2 - x1)
+            intersection_y = y1 + ua * (y2 - y1)
+            return (intersection_x, intersection_y)
+        return None
+    def distance(point):
+        # Check if a point is within a certain distance from the line
+        x1, y1 = self.start
+        x2, y2 = self.end
+        px, py = point
+        line_length = math.hypot(x2 - x1, y2 - y1)
+        if line_length == 0:
+            return math.hypot(px - x1, py - y1)
+        # Calculate the projection of the point onto the line
+        t = ((px - x1) * (x2 - x1) + (py - y1) * (y2 - y1)) / (line_length ** 2)
+        t = max(0, min(1, t))
+        closest_x = x1 + t * (x2 - x1)
+        closest_y = y1 + t * (y2 - y1)
+        return math.hypot(px - closest_x, py - closest_y)
+class path:
+    def __init__(self, points=None, lines=None):
+        self.lines = []
+        if points is not None and len(points) >= 2:
+            for i in range(len(points) - 1):
+                # Create lines from consecutive points
+                start = points[i]
+                end = points[i+1]
+                angle = math.atan2(end[1] - start[1], end[0] - start[0])
+                length = math.hypot(end[0] - start[0], end[1] - start[1])
+                self.lines.append(line(start, angle, length))
+        elif lines is not None:
+            self.lines = lines
+    
+    def add_point(self, point):
+        if not self.lines:
+            # Store first point to use with next point
+            self.start_point = point
+        else:
+            # Add line from last point to new point
+            last_point = self.lines[-1].end
+            angle = math.atan2(point[1] - last_point[1], point[0] - last_point[0])
+            length = math.hypot(point[0] - last_point[0], point[1] - last_point[1])
+            self.lines.append(line(last_point, angle, length))
+    
+    def add_line(self, line_to_add):
+        self.lines.append(line_to_add)
+    
+    def length(self):
+        return sum(l.length for l in self.lines)
+    
+    def intersects_with_line(self, other_line):
+        for l in self.lines:
+            intersection = line.find_intersection(l, other_line)
+            if intersection is not None:
+                return True, intersection
+        return False, None
+    
+    def intersects_with_path(self, other_path):
+        for l1 in self.lines:
+            for l2 in other_path.lines:
+                intersection = line.find_intersection(l1, l2)
+                if intersection is not None:
+                    return True, intersection
+        return False, None
+    def distance(self, point):
+        # Check if a point is within a certain distance from the path
+        dist = []
+        for l in self.lines:
+            dist.append((l.distance(point),l.angle))
+        return min(dist,key=lambda x: x[0]) if dist else float('inf')
 
 def judge_bullet(bullet_pos, bullet_speed, player, walls):
     bullet_angle = bullet_pos.angle
     player_pos = player.position
     is_safe = True
-    distance = 0
-    for i in range(1, 100):
-        distance += bullet_speed
-        bullet_pos.x += bullet_speed * math.cos(bullet_angle)
-        bullet_pos.y += bullet_speed * math.sin(bullet_angle)
+    dist = []
+    bullet_path = path([(bullet_pos.x, bullet_pos.y)])
+    for i in range(1, 10):
+        bullet_line=line((bullet_pos.x, bullet_pos.y), bullet_angle, float('inf'))
         for wall in walls:
             wall_y = wall.position.y*10
             wall_x = wall.position.x*10
             wall_length = 10  # Assuming default wall length
-            collision_distance = 1  # Collision threshold
-            if wall.position.angle == 0:
-                # For horizontal walls (angle == 0)
-                # Check if bullet is close enough to the wall to be considered a collision
-                if abs(bullet_pos.y - wall_y) < collision_distance and 0 < bullet_pos.x - wall_x < wall_length:
-                    bullet_angle = 180 - bullet_angle
-            if wall.position.angle == 90:
-                # For vertical walls (angle == 90)
-                # Check if bullet is close enough to the wall to be considered a collision
-                if abs(bullet_pos.x - wall_x) < collision_distance and 0 < bullet_pos.y - wall_y < wall_length:
-                    bullet_angle = - bullet_angle
-            bullet_angle = bullet_angle % 360
-        dist = math.hypot(player_pos.x - bullet_pos.x, player_pos.y - bullet_pos.y)
-        if dist < 1:
+            wall_line = line((wall_x, wall_y), wall.position.angle, wall_length)
+            intersection = bullet_line.find_intersection(wall_line)
+            if intersection is not None:
+                dist.append((intersection,math.hypot(bullet_pos.x - intersection[0], bullet_pos.y - intersection[1]),wall_line.angle))
+        if not dist:
+            distance = float('inf')
+        else:
+            intersection,_,angle=min(dist, key=lambda x: x[1])
+        bullet_path.add_point(intersection)
+        distance,angle=bullet_path.distance((bullet_pos.x, bullet_pos.y))
+        if bullet_path.distance((player_pos.x, player_pos.y)) < 1:
             is_safe = False
-            break
-    return is_safe, bullet_angle, distance
+            return is_safe, angle
+        bullet_angle=(2*angle-bullet_angle)%360
+        bullet_pos.x= intersection[0]
+        bullet_pos.y= intersection[1]
+    return is_safe, None
+        # Calculate the new angle after reflection
 # def find_rival(walls,self_info, opponent_info):
 #     """Find the shortest path to the rival player using A* algorithm."""
 #     start = (int(self_info.position.x), int(self_info.position.y))
@@ -119,7 +212,7 @@ def target_rival(walls,self_info, opponent_info):
         bullet_pos.x += 0.8 * math.cos(i/180*math.pi)
         bullet_pos.y += 0.8 * math.sin(i/180*math.pi)
         bullet_pos.angle = i
-        is_safe, direction, distance = judge_bullet(bullet_pos, bulletspeed, opponent_info, walls)
+        is_safe, direction= judge_bullet(bullet_pos, bulletspeed, opponent_info, walls)
         if not is_safe:
             return i
     return 360
@@ -298,11 +391,11 @@ async def loop(agent: Agent):
     update_game_state(self_info, opponent_info, walls, bullets)
     is_safe = True
     # anti-rotation
-    agent.turn_clockwise(0)
+    await agent.turn_clockwise(0)
     bullet_danger_distance = 5.0
     for bullet in bullets:
         state="avoiding"
-        is_safe, direction, distace = judge_bullet(bullet.position,bullet.speed, self_info, walls)
+        is_safe, direction = judge_bullet(bullet.position,bullet.speed, self_info, walls)
         bulletspeed = bullet.speed
         if not is_safe:
             perp_direction = (direction + 90) % 360
@@ -313,53 +406,38 @@ async def loop(agent: Agent):
                 else:
                     await agent.turn_counter_clockwise(diff)
             else:
-                diff = (360 - diff) % 360
+                diff = ( - diff) % 360
                 if diff > 45:
                     await agent.turn_clockwise(45)
                 else:
                     await agent.turn_clockwise(diff)
             await agent.turn_clockwise(0)
             await agent.move_forward()
-            break
+            # break
 
-    wall_safe_distance = 5.0
+    wall_safe_distance = 1.0
     if is_safe and self_info.weapon.current_bullets > 0:
         distance = math.hypot(opponent_info.position.x - px, opponent_info.position.y - py)
         state="moving"
         await agent.move_forward()
-        next_pos = (px + wall_safe_distance * math.cos(player_angle), py + wall_safe_distance * math.sin(player_angle))
-        new_info,_= await get_player_info(agent)
-        new_pos = (new_info.position.x, new_info.position.y)
-        if new_pos == (px, py):
-            await agent.move_backward()
-            await agent.turn_clockwise()
-            await agent.move_forward()s
-            await agent.turn_clockwise(0)
+        my_line=line((px, py),player_angle, float('inf'))
+        dist = []
         for wall in walls:
-            wall_pos = wall.position
-            wx = wall_pos.x * 10
-            wy = wall_pos.y * 10
-            nx = next_pos[0]
-            ny = next_pos[1]
-            wall_angle = wall_pos.angle
-            if wall_angle == 0:
-                intersection_x=(wy-py)/math.tan(player_angle)+px
-                if (py < wy and ny > wy) or (py > wy and ny < wy) and 0 < intersection_x - nx < 10:
-                    await agent.move_backward()
-                    if math.tan(player_angle) > 0:
-                        await agent.turn_clockwise()
-                    else:
-                        await agent.turn_counter_clockwise()
-                break
-            elif wall_angle == 90:
-                intersection_y=(wx-px)*math.tan(player_angle)+py
-                if (px < wx and nx > wx) or (px > wx and nx < wx) and 0 < intersection_y - ny < 10:
-                    await agent.move_backward()
-                    if math.tan(player_angle) > 0:
-                        await agent.turn_counter_clockwise()
-                    else:
-                        await agent.turn_clockwise()
-                break
+            wall_y = wall.position.y*10
+            wall_x = wall.position.x*10
+            wall_length = 10  # Assuming default wall length
+            wall_line = line((wall_x, wall_y), wall.position.angle, wall_length)
+            intersection = my_line.find_intersection(wall_line)
+            if intersection is not None:
+                dist.append((intersection,math.hypot(bullet_pos.x - intersection[0], bullet_pos.y - intersection[1]),wall_line.angle))
+        if not dist:
+            distance = float('inf')
+        else:
+            intersection,distance,angle=min(dist, key=lambda x: x[1])
+        if distance < wall_safe_distance:
+            await agent.turn_clockwise()
+        else:
+            await agent.turn_clockwise(0)
         target = target_rival(walls, self_info, opponent_info)
         if target != 360: 
             await agent.move_forward(0)
@@ -486,5 +564,6 @@ def parse_options() -> Options:
 
 
 if __name__ == "__main__":
+    
     asyncio.run(main())
     
